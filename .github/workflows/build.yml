@@ -37,7 +37,7 @@ jobs:
         run: for script in bin/rt-token bin/rt-user; do perl -c "$script"; done
 
       - name: hadolint
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: Dockerfile
 
