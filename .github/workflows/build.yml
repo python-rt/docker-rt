@@ -1,0 +1,146 @@
+name: Build, test and publish
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    # weekly rebuild with the current Debian packages
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # runs on main are queued, not cancelled, so a publish is never interrupted halfway
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/request-tracker
+  # images are only published from main, not from pull requests
+  PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: shellcheck
+        run: shellcheck docker-entrypoint.sh test.sh bin/rt-initdata
+
+      - name: perl syntax
+        # the scripts need RT, so only the syntax is checked; RT is loaded at runtime with require
+        run: for script in bin/rt-token bin/rt-user; do perl -c "$script"; done
+
+      - name: hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+  build:
+    name: RT ${{ matrix.rt }}
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # OIDC token for keyless signing with cosign
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # rt: RT_VERSION (a release or a branch of bestpractical/rt), tags: published image tags
+          - rt: '6.0.4'
+            tags: '6.0.4 6.0 6 latest'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build for testing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          build-args: RT_VERSION=${{ matrix.rt }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          pull: true
+          no-cache: ${{ github.event_name == 'schedule' }}
+          load: true
+          tags: request-tracker:test
+          cache-from: type=gha,scope=rt-${{ matrix.rt }}
+          cache-to: type=gha,mode=max,scope=rt-${{ matrix.rt }}
+
+      - name: Test
+        run: ./test.sh request-tracker:test '${{ matrix.rt }}'
+
+      - name: Image tags
+        id: tags
+        if: env.PUBLISH == 'true'
+        env:
+          TAGS: ${{ matrix.tags }}
+        run: |
+          tags=()
+          for tag in $TAGS; do
+            tags+=("${IMAGE}:${tag}")
+          done
+          echo "tags=$(IFS=,; echo "${tags[*]}")" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish
+        id: publish
+        if: env.PUBLISH == 'true'
+        # same inputs as the tested build, so all layers come from the cache of the builder; without attestations the
+        # image is a single manifest
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          build-args: RT_VERSION=${{ matrix.rt }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          provenance: false
+          sbom: false
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=rt-${{ matrix.rt }}
+
+      - name: Install cosign
+        if: env.PUBLISH == 'true'
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign
+        if: env.PUBLISH == 'true'
+        # keyless with the OIDC identity of this workflow; the signature covers the digest and thus all tags
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+  # deletes the images which are no longer tagged, i.e. the previous builds, together with their signatures; only the
+  # current build is kept; the signatures of the current images are kept as well, although they are stored as untagged
+  # artifacts (referenced by the tag sha256-<digest>)
+  cleanup:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+
+    steps:
+      - uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          package: request-tracker
+          delete-untagged: true
+          # signatures whose image does not exist anymore
+          delete-orphaned-images: true

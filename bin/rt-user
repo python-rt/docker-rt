@@ -1,0 +1,70 @@
+#!/usr/bin/perl
+# Creates a user or updates an existing one.
+#
+#   rt-user NAME [--password PASSWORD] [--email ADDRESS] [--real-name NAME]
+#                [--privileged | --unprivileged] [--superuser | --no-superuser]
+#
+# New users are privileged unless --unprivileged is given. --superuser grants the right SuperUser,
+# which allows everything.
+#
+# Example: docker exec rt rt-user alice --password secret --email alice@example.com
+
+use strict;
+use warnings;
+
+use lib '/opt/rt/local/lib', '/opt/rt/lib';
+
+use Getopt::Long;
+
+my $usage = "Usage: $0 NAME [--password PASSWORD] [--email ADDRESS] [--real-name NAME]"
+    . " [--privileged | --unprivileged] [--superuser | --no-superuser]\n";
+
+my ($password, $email, $real_name, $privileged, $superuser);
+GetOptions(
+    'password=s'   => \$password,
+    'email=s'      => \$email,
+    'real-name=s'  => \$real_name,
+    'privileged!'  => \$privileged,
+    'superuser!'   => \$superuser,
+) or die $usage;
+die $usage unless @ARGV == 1;
+my $name = $ARGV[0];
+
+require RT;
+RT::LoadConfig();
+RT::Init();
+
+sub check {
+    my ($ok, $msg) = @_;
+    die "$msg\n" unless $ok;
+    print "$msg\n" if $msg;
+}
+
+my $user = RT::User->new(RT->SystemUser);
+$user->Load($name);
+
+if ($user->Id) {
+    check($user->SetEmailAddress($email)) if defined $email && $email ne ($user->EmailAddress // '');
+    check($user->SetRealName($real_name)) if defined $real_name && $real_name ne ($user->RealName // '');
+    check($user->SetPrivileged($privileged ? 1 : 0)) if defined $privileged && $privileged != $user->Privileged;
+}
+else {
+    check($user->Create(
+        Name       => $name,
+        Privileged => $privileged // 1,
+        (defined $email     ? (EmailAddress => $email)    : ()),
+        (defined $real_name ? (RealName     => $real_name) : ()),
+    ));
+}
+
+check($user->SetPassword($password)) if defined $password;
+
+if (defined $superuser) {
+    my $has_right = $user->PrincipalObj->HasRight(Right => 'SuperUser', Object => RT->System);
+    if ($superuser && !$has_right) {
+        check($user->PrincipalObj->GrantRight(Right => 'SuperUser', Object => RT->System));
+    }
+    elsif (!$superuser && $has_right) {
+        check($user->PrincipalObj->RevokeRight(Right => 'SuperUser', Object => RT->System));
+    }
+}

@@ -1,0 +1,34 @@
+#!/usr/bin/perl
+# Creates an authentication token for a user and prints it (only the token is printed to stdout).
+#
+#   rt-token [--user NAME] [--description TEXT]
+#
+# Example: export RT_TOKEN=$(docker exec rt rt-token)
+
+use strict;
+use warnings;
+
+use lib '/opt/rt/local/lib', '/opt/rt/lib';
+
+use Getopt::Long;
+
+my $user_name   = 'root';
+my $description = 'docker';
+
+GetOptions('user=s' => \$user_name, 'description=s' => \$description)
+    or die "Usage: $0 [--user NAME] [--description TEXT]\n";
+die "Usage: $0 [--user NAME] [--description TEXT]\n" if @ARGV;
+
+require RT;
+RT::LoadConfig();
+RT::Init();
+
+my $user = RT::User->new(RT->SystemUser);
+$user->Load($user_name);
+die "User $user_name not found\n" unless $user->Id;
+
+my $auth_token = RT::AuthToken->new(RT->SystemUser);
+my ($id, $msg, $token) = $auth_token->Create(Owner => $user->Id, Description => $description);
+die "Creating the authentication token failed: $msg\n" unless $id;
+
+print "$token\n";

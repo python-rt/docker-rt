@@ -1,0 +1,24 @@
+#!/bin/bash
+# Inserts RT initial data (users, groups, queues, custom fields, rights, ...) from a file or stdin, see
+# https://docs.bestpractical.com/rt/latest/initialdata.html
+#
+#   rt-initdata FILE
+#   rt-initdata - < FILE
+#
+# Example: docker exec -i rt rt-initdata - < initialdata.pl
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "Usage: $0 FILE | -" >&2
+  exit 2
+fi
+
+datafile=$1
+if [[ "$datafile" == "-" ]]; then
+  datafile=$(mktemp --suffix=.pl)
+  trap 'rm -f "$datafile"' EXIT
+  cat > "$datafile"
+fi
+
+/opt/rt/sbin/rt-setup-database --action insert --skip-create --datafile "$datafile" < /dev/null
