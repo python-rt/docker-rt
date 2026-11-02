@@ -1,0 +1,103 @@
+name: Check for RT releases
+
+# Opens a pull request for a new release of a series in versions.json (e.g. 6.0.4 -> 6.0.5) and starts the build and
+# test of it. Opens an issue for a release of a new series (e.g. 6.1.0 or 7.0.0), as the tags to move (latest, 6) and
+# whether to keep building the old series is a decision.
+#
+# Requires the repository setting "Allow GitHub Actions to create and approve pull requests" (Settings, Actions,
+# General). Pull requests opened with GITHUB_TOKEN do not trigger workflows, so the build is started explicitly; its
+# result is shown on the pull request.
+
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+
+jobs:
+  check:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      # push the update branch
+      contents: write
+      pull-requests: write
+      issues: write
+      # start the build of the update branch
+      actions: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check
+        id: check
+        run: |
+          result=$(python3 scripts/rt-release.py check)
+          echo "$result"
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+
+      - name: Pull requests for new releases of the built series
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ steps.check.outputs.result }}
+          BASE: ${{ github.ref_name }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          base_commit=$(git rev-parse HEAD)
+
+          jq -r '.updates[] | "\(.old) \(.new)"' <<< "$RESULT" | while read -r old new; do
+            branch="update-rt-${new}"
+            # proposed before: a pull request exists (open, closed or merged)
+            if [[ -n "$(gh pr list --head "$branch" --state all --json number --jq '.[].number')" ]]; then
+              echo "RT ${new}: already proposed in ${branch}"
+              continue
+            fi
+
+            # a branch without pull request is left from a failed run and is replaced
+            git switch -c "$branch" "$base_commit"
+            python3 scripts/rt-release.py apply "$old" "$new"
+            git commit -a -m "Update RT ${old} to ${new}"
+            git push --force origin "$branch"
+
+            gh pr create --base "$BASE" --head "$branch" --title "Update RT ${old} to ${new}" --body "$(cat <<EOF
+          RT ${new} has been released: [release notes](https://docs.bestpractical.com/release-notes/rt/${new}).
+
+          This updates the version in \`versions.json\`, the \`Dockerfile\` default and the \`README.md\`. The image is built and tested by the workflow *Build, test and publish* (see the checks); it is published when this is merged.
+
+          Opened automatically by the workflow *Check for RT releases*.
+          EOF
+            )"
+            gh workflow run build.yml --ref "$branch"
+          done
+
+      - name: Issues for releases of new series
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ steps.check.outputs.result }}
+        run: |
+          jq -r '.new_series[]' <<< "$RESULT" | while read -r version; do
+            # one issue per series (open or closed), not per release
+            series=${version%.*}
+            title="New RT series ${series}"
+            if [[ -n "$(gh issue list --state all --search "\"${title}\" in:title" --json title \
+              --jq ".[] | select(.title | startswith(\"${title}:\")) | .title")" ]]; then
+              echo "${title}: issue exists"
+              continue
+            fi
+            title="${title}: RT ${version} released"
+
+            gh issue create --title "$title" --body "$(cat <<EOF
+          RT ${version} has been released as first release of a new series: [release notes](https://docs.bestpractical.com/release-notes/rt/${version}).
+
+          To build it, add it to \`versions.json\` and decide which tags move to it, e.g. \`latest\` and the major version, and whether the previous series is still built. Update the tags table and the examples in \`README.md\` and the default \`RT_VERSION\` in the \`Dockerfile\`.
+
+          Opened automatically by the workflow *Check for RT releases*.
+          EOF
+            )"
+          done

@@ -36,14 +36,30 @@ jobs:
         # the scripts need RT, so only the syntax is checked; RT is loaded at runtime with require
         run: for script in bin/rt-token bin/rt-user; do perl -c "$script"; done
 
+      - name: python syntax
+        run: python3 -m py_compile scripts/rt-release.py
+
       - name: hadolint
         uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: Dockerfile
 
+  # the RT versions to build, from versions.json: rt is RT_VERSION (a release or a branch of bestpractical/rt), tags are
+  # the published image tags
+  versions:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.versions.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read versions.json
+        id: versions
+        run: echo "matrix=$(jq -c . versions.json)" >> "$GITHUB_OUTPUT"
+
   build:
     name: RT ${{ matrix.rt }}
-    needs: lint
+    needs: [lint, versions]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -54,10 +70,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # rt: RT_VERSION (a release or a branch of bestpractical/rt), tags: published image tags
-          - rt: '6.0.4'
-            tags: '6.0.4 6.0 6 latest'
+        include: ${{ fromJSON(needs.versions.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v7

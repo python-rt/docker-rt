@@ -126,7 +126,27 @@ docker build --build-arg RT_VERSION=6.0.4 --tag request-tracker:6.0.4 .
 Missing Perl dependencies of the version are installed from CPAN and the build fails if any are still missing.
 `test.sh` starts a container of the image and checks the configuration, the helpers and the initialization.
 
-To publish another version, add it to the matrix in [.github/workflows/build.yml](.github/workflows/build.yml).
+The built versions and their image tags are listed in [versions.json](versions.json).
+
+## New RT releases
+
+The workflow *Check for RT releases* ([.github/workflows/update.yml](.github/workflows/update.yml)) checks the
+[releases](https://download.bestpractical.com/pub/rt/release/) daily:
+
+- a new release of a built series (e.g. 6.0.5 for 6.0.4) gets a pull request, which updates `versions.json`, the
+  `Dockerfile` default and this README; the image is built and tested on it and published when it is merged,
+- a new series (e.g. 6.1 or 7.0) gets an issue, as the tags to move (e.g. `latest`) and whether to keep building the
+  previous series are a decision; this is done by hand in `versions.json`.
+
+Each update gets one pull request and each new series one issue, also if it is closed without merging or doing
+anything; pull requests and issues are not opened again on the following runs. The workflow needs the repository setting *Allow GitHub Actions to create and approve pull requests*
+(Settings, Actions, General).
+
+The update can also be done locally with `scripts/rt-release.py check` and `scripts/rt-release.py apply OLD NEW`.
+
+If the build of a new release fails at the signature check, Best Practical has signed it with another key: replace
+[keys/bestpractical-rt.asc](keys/bestpractical-rt.asc) and the fingerprint in `RT_SIGNING_KEY` of the `Dockerfile` and
+above, after verifying the new key.
 
 ## Publishing
 
